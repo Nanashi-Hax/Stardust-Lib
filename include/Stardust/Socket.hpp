@@ -1,3 +1,5 @@
+#pragma once
+
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -5,7 +7,7 @@
 class Socket
 {
 private:
-    int socketFD = -1;
+    int socketFd = -1;
     std::mutex mtx;
 
 public:
@@ -19,8 +21,8 @@ public:
 
     Socket(Socket&& other) noexcept
     {
-        socketFD = other.socketFD;
-        other.socketFD = -1;
+        socketFd = other.socketFd;
+        other.socketFd = -1;
     }
 
     Socket& operator=(Socket&& other) noexcept
@@ -28,8 +30,8 @@ public:
         if(this != &other)
         {
             close();
-            socketFD = other.socketFD;
-            other.socketFD = -1;
+            socketFd = other.socketFd;
+            other.socketFd = -1;
         }
         return *this;
     }
@@ -43,4 +45,6 @@ public:
     Result send(const void* data, ssize_t size, ssize_t& outBytes);
     Result recv(void* buffer, ssize_t size, ssize_t& outBytes);
     Result close();
+
+    int getFd() const;
 };

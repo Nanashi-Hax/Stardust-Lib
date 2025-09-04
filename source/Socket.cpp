@@ -1,4 +1,4 @@
-#include <Stardust/Socket.hpp>
+#include "Stardust/Socket.hpp"
 
 #include <sys/socket.h>
 #include <sys/errno.h>
@@ -10,8 +10,8 @@
 
 Socket::Result Socket::create(bool nonBlocking, bool noDelay)
 {
-    socketFD = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if(socketFD < 0)
+    socketFd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if(socketFd < 0)
     {
         close();
         return Result::Error;
@@ -20,7 +20,7 @@ Socket::Result Socket::create(bool nonBlocking, bool noDelay)
     int ret;
 
     int opt = 1;
-    ret = setsockopt(socketFD, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    ret = setsockopt(socketFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     if(ret < 0)
     {
         close();
@@ -29,7 +29,7 @@ Socket::Result Socket::create(bool nonBlocking, bool noDelay)
 
     if(noDelay)
     {
-        ret = setsockopt(socketFD, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+        ret = setsockopt(socketFd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
         if(ret < 0)
         {
             close();
@@ -39,13 +39,13 @@ Socket::Result Socket::create(bool nonBlocking, bool noDelay)
 
     if(nonBlocking)
     {
-        int flags = fcntl(socketFD, F_GETFL, 0);
+        int flags = fcntl(socketFd, F_GETFL, 0);
         if(flags < 0)
         {
             close();
             return Result::Error;
         }
-        ret = fcntl(socketFD, F_SETFL, flags | O_NONBLOCK);
+        ret = fcntl(socketFd, F_SETFL, flags | O_NONBLOCK);
         if(ret < 0)
         {
             close();
@@ -63,7 +63,7 @@ Socket::Result Socket::bind(uint16_t port)
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     addr.sin_port = htons(port);
 
-    if(::bind(socketFD, (struct sockaddr*)&addr, sizeof(addr)) < 0)
+    if(::bind(socketFd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
     {
         close();
         return Result::Error;
@@ -74,7 +74,7 @@ Socket::Result Socket::bind(uint16_t port)
 
 Socket::Result Socket::listen(int backlog)
 {
-    if(::listen(socketFD, backlog) < 0)
+    if(::listen(socketFd, backlog) < 0)
     {
         close();
         return Result::Error;
@@ -85,10 +85,10 @@ Socket::Result Socket::listen(int backlog)
 
 Socket::Result Socket::accept(Socket& outClient)
 {
-    int clientFD = ::accept(socketFD, nullptr, nullptr);
-    if(clientFD >= 0)
+    int clientFd = ::accept(socketFd, nullptr, nullptr);
+    if(clientFd >= 0)
     {
-        outClient.socketFD = clientFD;
+        outClient.socketFd = clientFd;
         return Result::Success;
     }
     else
@@ -103,73 +103,72 @@ Socket::Result Socket::accept(Socket& outClient)
 
 Socket::Result Socket::send(const void* data, ssize_t size, ssize_t& outBytes)
 {
-    if(socketFD < 0) return Result::Error;
+    if(socketFd < 0) return Result::Error;
 
     std::lock_guard<std::mutex> lock(mtx);
-    outBytes = 0;
-    const uint8_t* ptr = static_cast<const uint8_t*>(data);
+    ssize_t sent = ::send(socketFd, data, size, 0);
 
-    while(outBytes < size)
+    if(sent > 0)
     {
-        ssize_t sent = ::send(socketFD, ptr + outBytes, size - outBytes, 0);
-        if(sent > 0)
-        {
-            outBytes += sent;
-        }
-        else if(sent == 0)
-        {
-            return Result::Closed;
-        }
-        else
-        {
-            if(errno == EAGAIN || errno == EWOULDBLOCK)
-            {
-                return Result::WouldBlock;
-            }
-            return Result::Error;
-        }
+        outBytes = sent;
+        return Result::Success;
     }
-    return Result::Success;
+    else if(sent == 0)
+    {
+        outBytes = 0;
+        return Result::Closed;
+    }
+    else
+    {
+        outBytes = 0;
+        if(errno == EAGAIN || errno == EWOULDBLOCK)
+        {
+            return Result::WouldBlock;
+        }
+        return Result::Error;
+    }
 }
 
 Socket::Result Socket::recv(void* buffer, ssize_t size, ssize_t& outBytes)
 {
-    if(socketFD < 0) return Result::Error;
+    if(socketFd < 0) return Result::Error;
 
     std::lock_guard<std::mutex> lock(mtx);
-    outBytes = 0;
-    uint8_t* ptr = static_cast<uint8_t*>(buffer);
+    ssize_t recvd = ::recv(socketFd, buffer, size, 0);
 
-    while(outBytes < size)
+    if(recvd > 0)
     {
-        ssize_t recvd = ::recv(socketFD, ptr + outBytes, size - outBytes, 0);
-        if(recvd > 0)
-        {
-            outBytes += recvd;
-        }
-        else if(recvd == 0)
-        {
-            return Result::Closed;
-        }
-        else if(recvd < 0)
-        {
-            if(errno == EAGAIN || errno == EWOULDBLOCK)
-            {
-                return Result::WouldBlock;
-            }
-            return Result::Error;
-        }
+        outBytes = recvd;
+        return Result::Success;
     }
-    return Result::Success;
+    else if(recvd == 0)
+    {
+        outBytes = 0;
+        return Result::Closed;
+    }
+    else
+    {
+        outBytes = 0;
+        if(errno == EAGAIN || errno == EWOULDBLOCK)
+        {
+            return Result::WouldBlock;
+        }
+        return Result::Error;
+    }
 }
 
 Socket::Result Socket::close()
 {
-    if(socketFD >= 0)
+    if(socketFd >= 0)
     {
-        ::close(socketFD);
-        socketFD = -1;
+        ::close(socketFd);
+        socketFd = -1;
         return Result::Success;
     }
     return Result::Error;
+}
+
+int Socket::getFd() const
+{
+    return socketFd;
 }
