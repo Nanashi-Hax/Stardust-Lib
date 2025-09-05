@@ -2,7 +2,7 @@
 
 #include "Stardust/Socket.hpp"
 #include <vector>
-#include <deque>
+#include <queue>
 #include <thread>
 
 class TCPServer
@@ -37,8 +37,14 @@ private:
     RecvCallback recvCallback;
     DisconnectCallback disconnectCallback;
 
-    std::jthread eventLoopThread;
-    void runEventLoop(std::stop_token st, int timeoutMs = 100);
+    std::queue<Packet> packetQueue;
+    std::mutex queueMtx;
+    std::condition_variable queueCv;
+    std::jthread processThread;
+    std::jthread networkThread;
+
+    void runNetworkLoop(std::stop_token st, int timeoutMs = 100);
+    void runProcessLoop(std::stop_token st);
     
 public:
     TCPServer(uint16_t port) : port(port) {}

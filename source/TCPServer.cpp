@@ -7,32 +7,36 @@ bool TCPServer::start()
     if(listenSocket->create(true, true) != Socket::Result::Success) return false;
     if(listenSocket->bind(port) != Socket::Result::Success) return false;
     if(listenSocket->listen() != Socket::Result::Success) return false;
-    eventLoopThread = std::jthread([this](std::stop_token st)
+    networkThread = std::jthread([this](std::stop_token st)
     {
-        runEventLoop(st);
+        runNetworkLoop(st);
+    });
+    processThread = std::jthread([this](std::stop_token st)
+    {
+        runProcessLoop(st);
     });
     return true;
 }
 
 void TCPServer::stop()
 {
-    eventLoopThread.request_stop();
+    networkThread.request_stop();
+    processThread.request_stop();
 
-    if(eventLoopThread.joinable()) eventLoopThread.join();
+    if(networkThread.joinable()) networkThread.join();
+    if(processThread.joinable()) processThread.join();
 
     if(listenSocket) listenSocket->close();
 
+    std::lock_guard<std::mutex> lock(clientsMtx);
+    for(auto& client : clients)
     {
-        std::lock_guard<std::mutex> lock(clientsMtx);
-        for(auto& client : clients)
+        if(client && client->socket)
         {
-            if(client && client->socket)
-            {
-                client->socket->close();
-            }
+            client->socket->close();
         }
-        clients.clear();
     }
+    clients.clear();
 }
 
 
@@ -42,7 +46,6 @@ bool TCPServer::send(const Packet& packet)
 
     {
         std::lock_guard<std::mutex> lock(clientsMtx);
-
         for(auto& c : clients)
         {
             if(c->id == packet.clientId)
@@ -59,11 +62,11 @@ bool TCPServer::send(const Packet& packet)
         std::lock_guard<std::mutex> sendLock(client->sendMutex);
 
         client->sendQueue.push_back(packet.data);
-        return true;
     }
+    return true;
 }
 
-void TCPServer::runEventLoop(std::stop_token st, int timeoutMs)
+void TCPServer::runNetworkLoop(std::stop_token st, int timeoutMs)
 {
     while(!st.stop_requested())
     {
@@ -146,7 +149,11 @@ void TCPServer::runEventLoop(std::stop_token st, int timeoutMs)
                         packet.clientId = client->id;
                         packet.data.assign(buffer, buffer + bytes);
                         
-                        recvCallback(packet);
+                        {
+                            std::lock_guard<std::mutex> queueLock(queueMtx);
+                            packetQueue.push(packet);
+                            queueCv.notify_one();
+                        }
                     }
                     else if(res == Socket::Result::Closed || res == Socket::Result::Error)
                     {
@@ -199,5 +206,28 @@ void TCPServer::runEventLoop(std::stop_token st, int timeoutMs)
                 }
             }
         }
+    }
+}
+
+void TCPServer::runProcessLoop(std::stop_token st)
+{
+    while(!st.stop_requested())
+    {
+        Packet packet;
+        {
+            std::unique_lock<std::mutex> lock(queueMtx);
+            queueCv.wait(lock, [this, &st]
+            {
+                return !packetQueue.empty() || st.stop_requested();
+            });
+
+            if(st.stop_requested()) break;
+            if(packetQueue.empty()) continue;
+
+            packet = packetQueue.front();
+            packetQueue.pop();
+        }
+
+        if(recvCallback) recvCallback(packet);
     }
 }
