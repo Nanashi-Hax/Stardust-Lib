@@ -19,14 +19,14 @@ public:
 
     Socket(const Socket&) = delete;
     Socket& operator=(const Socket&) = delete;
-    Socket(Socket&& other) = delete;
-    Socket& operator=(Socket&& other) = delete;
+    Socket(Socket&&) = delete;
+    Socket& operator=(Socket&&) = delete;
 
     // Server
     Result create(bool nonBlocking = true, bool noDelay = true);
     Result bind(uint16_t port);
     Result listen(int backlog = 16);
-    Result accept(std::unique_ptr<Socket>& outClient);
+    Result accept(std::unique_ptr<Socket>& outClient, uint32_t& outIPAddress);
 
     // Client
     Result send(const void* data, ssize_t size, ssize_t& outBytes);
@@ -34,6 +34,5 @@ public:
 
     // Common
     Result close();
-
     int getFd() const;
 };

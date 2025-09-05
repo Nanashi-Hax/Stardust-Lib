@@ -16,6 +16,8 @@ public:
 
     using RecvCallback = std::function<void(const Packet& data)>;
     using DisconnectCallback = std::function<void(uint64_t clientId)>;
+    using ServerIPAddressCallback = std::function<void(uint32_t ipAddress)>;
+    using ClientIPAddressCallback = std::function<void(uint32_t ipAddress, uint64_t id)>;
 
 private:
     struct Client
@@ -27,6 +29,7 @@ private:
         std::mutex sendMutex;
     };
 
+    uint32_t serverIPAddress;
     uint16_t port;
 
     std::unique_ptr<Socket> listenSocket;
@@ -36,6 +39,8 @@ private:
 
     RecvCallback recvCallback;
     DisconnectCallback disconnectCallback;
+    ServerIPAddressCallback serverIPAddressCallback;
+    ClientIPAddressCallback clientIPAddressCallback;
 
     std::queue<Packet> packetQueue;
     std::mutex queueMtx;
@@ -45,10 +50,18 @@ private:
 
     void runNetworkLoop(std::stop_token st, int timeoutMs = 100);
     void runProcessLoop(std::stop_token st);
+
+    bool initializeServerIPAddress();
+    void finalizeServerIPAddress();
     
 public:
     TCPServer(uint16_t port) : port(port) {}
     ~TCPServer() { stop(); }
+
+    TCPServer(const TCPServer&) = delete;
+    TCPServer& operator=(const TCPServer&) = delete;
+    TCPServer(TCPServer&&) = delete;
+    TCPServer& operator=(TCPServer&&) = delete;
 
     bool start();
     void stop();
@@ -57,4 +70,6 @@ public:
 
     void setRecvCallback(RecvCallback cb) { recvCallback = cb; }
     void setDisconnectCallback(DisconnectCallback cb) { disconnectCallback = std::move(cb); }
+    void setServerIPAddressCallback(ServerIPAddressCallback cb) { serverIPAddressCallback = std::move(cb); }
+    void setClientIPAddressCallback(ClientIPAddressCallback cb) { clientIPAddressCallback = std::move(cb); }
 };

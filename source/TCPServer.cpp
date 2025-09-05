@@ -1,12 +1,28 @@
 #include "Stardust/TCPServer.hpp"
 #include <poll.h>
 #include <algorithm>
+#include <nn/ac.h>
+
+bool TCPServer::initializeServerIPAddress()
+{
+    if (nn::ac::Initialize().IsFailure()) return false;
+    if (nn::ac::Connect().IsFailure()) return false;
+    if (nn::ac::GetAssignedAddress(&serverIPAddress).IsFailure()) return false;
+    return true;
+}
+
+void TCPServer::finalizeServerIPAddress()
+{
+    nn::ac::Finalize();
+}
 
 bool TCPServer::start()
 {
+    listenSocket = std::make_unique<Socket>();
     if(listenSocket->create(true, true) != Socket::Result::Success) return false;
     if(listenSocket->bind(port) != Socket::Result::Success) return false;
     if(listenSocket->listen() != Socket::Result::Success) return false;
+
     networkThread = std::jthread([this](std::stop_token st)
     {
         runNetworkLoop(st);
@@ -15,6 +31,12 @@ bool TCPServer::start()
     {
         runProcessLoop(st);
     });
+
+    if(initializeServerIPAddress())
+    {
+        if(serverIPAddressCallback) serverIPAddressCallback(serverIPAddress);
+    }
+
     return true;
 }
 
@@ -37,8 +59,9 @@ void TCPServer::stop()
         }
     }
     clients.clear();
-}
 
+    finalizeServerIPAddress();
+}
 
 bool TCPServer::send(const Packet& packet)
 {
@@ -115,8 +138,9 @@ void TCPServer::runNetworkLoop(std::stop_token st, int timeoutMs)
         // accept new clients
         if(pfds[0].revents & POLLIN)
         {
+            uint32_t outIPAddress = 0;
             std::unique_ptr<Socket> newClient;
-            auto res = listenSocket->accept(newClient);
+            auto res = listenSocket->accept(newClient, outIPAddress);
             if(res == Socket::Result::Success)
             {
                 std::unique_ptr<Client> client = std::make_unique<Client>();
@@ -124,6 +148,7 @@ void TCPServer::runNetworkLoop(std::stop_token st, int timeoutMs)
                 client->socket = std::move(newClient);
                 std::lock_guard<std::mutex> clientLock(clientsMtx);
                 clients.push_back(std::move(client));
+                if(clientIPAddressCallback) clientIPAddressCallback(outIPAddress, client->id);
             }
         }
 

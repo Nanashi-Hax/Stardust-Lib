@@ -58,7 +58,7 @@ Socket::Result Socket::create(bool nonBlocking, bool noDelay)
 
 Socket::Result Socket::bind(uint16_t port)
 {
-    sockaddr_in addr{};
+    sockaddr_in addr;
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     addr.sin_port = htons(port);
@@ -66,7 +66,7 @@ Socket::Result Socket::bind(uint16_t port)
     int res;
     {
         std::lock_guard<std::mutex> bindLock(mutex);
-        res = ::bind(socketFd, (struct sockaddr*)&addr, sizeof(addr));
+        res = ::bind(socketFd, (sockaddr*)&addr, sizeof(addr));
     }
 
     if(res < 0)
@@ -95,16 +95,19 @@ Socket::Result Socket::listen(int backlog)
     return Result::Success;
 }
 
-Socket::Result Socket::accept(std::unique_ptr<Socket>& outClient)
+Socket::Result Socket::accept(std::unique_ptr<Socket>& outClient, uint32_t& outIPAddresss)
 {
     int clientFd;
+    sockaddr_in addr;
+    socklen_t len = sizeof(addr);
     {
         std::lock_guard<std::mutex> acceptLock(mutex);
-        clientFd = ::accept(socketFd, nullptr, nullptr);
+        clientFd = ::accept(socketFd, (sockaddr*)&addr, &len);
     }
 
     if(clientFd >= 0)
     {
+        outIPAddresss = addr.sin_addr.s_addr;
         outClient = std::make_unique<Socket>();
         outClient->socketFd = clientFd;
         return Result::Success;
