@@ -4,22 +4,39 @@
 
 bool TCPServer::start()
 {
-    if(listenSocket.create(true, true) != Socket::Result::Success) return false;
-    if(listenSocket.bind(port) != Socket::Result::Success) return false;
-    if(listenSocket.listen() != Socket::Result::Success) return false;
-    running = true;
+    if(listenSocket->create(true, true) != Socket::Result::Success) return false;
+    if(listenSocket->bind(port) != Socket::Result::Success) return false;
+    if(listenSocket->listen() != Socket::Result::Success) return false;
+    eventLoopThread = std::jthread([this](std::stop_token st)
+    {
+        runEventLoop(st);
+    });
     return true;
 }
 
 void TCPServer::stop()
 {
-    running = false;
-    for(auto& client : clients) client.socket.close();
-    clients.clear();
-    listenSocket.close();
+    eventLoopThread.request_stop();
+
+    if(eventLoopThread.joinable()) eventLoopThread.join();
+
+    if(listenSocket) listenSocket->close();
+
+    {
+        std::lock_guard<std::mutex> lock(clientsMtx);
+        for(auto& client : clients)
+        {
+            if(client && client->socket)
+            {
+                client->socket->close();
+            }
+        }
+        clients.clear();
+    }
 }
 
-bool TCPServer::queueSend(const Packet& packet)
+
+bool TCPServer::send(const Packet& packet)
 {
     Client* client = nullptr;
 
@@ -28,9 +45,9 @@ bool TCPServer::queueSend(const Packet& packet)
 
         for(auto& c : clients)
         {
-            if(c.id == packet.id)
+            if(c->id == packet.clientId)
             {
-                client = &c;
+                client = c.get();
                 break;
             }
         }
@@ -41,30 +58,20 @@ bool TCPServer::queueSend(const Packet& packet)
     {
         std::lock_guard<std::mutex> sendLock(client->sendMutex);
 
-        client->sendBuffer.insert(client->sendBuffer.end(), packet.data.begin(), packet.data.end());
+        client->sendQueue.push_back(packet.data);
         return true;
     }
 }
 
-bool TCPServer::dequeueRecv(Packet& outPacket)
+void TCPServer::runEventLoop(std::stop_token st, int timeoutMs)
 {
-    std::lock_guard<std::mutex> lock(recvQueueMutex);
-    if (recvQueue.empty()) return false;
-
-    outPacket = std::move(recvQueue.front());
-    recvQueue.pop_front();
-    return true;
-}
-
-void TCPServer::runEventLoop(int timeoutMs)
-{
-    while(running)
+    while(!st.stop_requested())
     {
         std::vector<pollfd> pfds;
 
         // listen sockets
         pollfd listenPfd;
-        listenPfd.fd = listenSocket.getFd();
+        listenPfd.fd = listenSocket->getFd();
         listenPfd.events = POLLIN;
         listenPfd.revents = 0;
         pfds.push_back(listenPfd);
@@ -75,12 +82,12 @@ void TCPServer::runEventLoop(int timeoutMs)
             for(auto& client : clients)
             {
                 pollfd pfd;
-                pfd.fd = client.socket.getFd();
+                pfd.fd = client->socket->getFd();
                 pfd.events = POLLIN;
 
                 {
-                    std::lock_guard<std::mutex> sendLock(client.sendMutex);
-                    if(!client.sendBuffer.empty()) pfd.events |= POLLOUT;
+                    std::lock_guard<std::mutex> sendLock(client->sendMutex);
+                    if(!client->sendQueue.empty()) pfd.events |= POLLOUT;
                 }
 
                 pfd.revents = 0;
@@ -89,19 +96,29 @@ void TCPServer::runEventLoop(int timeoutMs)
         }
 
         int ret = poll(pfds.data(), pfds.size(), timeoutMs);
-        if(ret < 0) break;
+        if(ret < 0)
+        {
+            if(errno == EINTR)
+            {
+                continue;
+            }
+            else
+            {
+                break;
+            }
+        }
         if(ret == 0) continue;
         
         // accept new clients
         if(pfds[0].revents & POLLIN)
         {
-            Socket newClient;
-            auto res = listenSocket.accept(newClient);
+            std::unique_ptr<Socket> newClient;
+            auto res = listenSocket->accept(newClient);
             if(res == Socket::Result::Success)
             {
-                Client client;
-                client.id = clientCounter++;
-                client.socket = std::move(newClient);
+                std::unique_ptr<Client> client = std::make_unique<Client>();
+                client->id = clientCounter++;
+                client->socket = std::move(newClient);
                 std::lock_guard<std::mutex> clientLock(clientsMtx);
                 clients.push_back(std::move(client));
             }
@@ -121,51 +138,66 @@ void TCPServer::runEventLoop(int timeoutMs)
                 {
                     uint8_t buffer[0x1000];
                     int bytes = 0;
-                    auto res = client.socket.recv(buffer, sizeof(buffer), bytes);
+                    auto res = client->socket->recv(buffer, sizeof(buffer), bytes);
 
                     if(res == Socket::Result::Success && bytes > 0)
                     {
-                        Packet pkt;
-                        pkt.id = client.id;
-                        pkt.data.assign(buffer, buffer + bytes);
-
-                        std::lock_guard<std::mutex> recvLock(recvQueueMutex);
-                        recvQueue.push_back(std::move(pkt));
+                        Packet packet;
+                        packet.clientId = client->id;
+                        packet.data.assign(buffer, buffer + bytes);
+                        
+                        recvCallback(packet);
                     }
                     else if(res == Socket::Result::Closed || res == Socket::Result::Error)
                     {
-                        if(disconnectCallback) disconnectCallback(client.id);
-                        client.socket.close();
+                        if(disconnectCallback) disconnectCallback(client->id);
+                        client->socket->close();
                     }
                 }
 
                 // send
                 if(pfd.revents & POLLOUT)
                 {
-                    std::lock_guard<std::mutex> sendlock(client.sendMutex);
+                    std::lock_guard<std::mutex> sendlock(client->sendMutex);
 
-                    if(!client.sendBuffer.empty())
+                    if(!client->sendQueue.empty())
                     {
                         ssize_t sentBytes = 0;
-                        auto res = client.socket.send(client.sendBuffer.data(), client.sendBuffer.size(), sentBytes);
+                        auto& front = client->sendQueue.front();
+                        auto res = client->socket->send(front.data(), front.size(), sentBytes);
 
                         if(res == Socket::Result::Success || res == Socket::Result::WouldBlock)
                         {
-                            if(sentBytes > 0)
+                            if(static_cast<size_t>(sentBytes) == front.size())
                             {
-                                client.sendBuffer.erase(client.sendBuffer.begin(), client.sendBuffer.begin() + sentBytes);
+                                client->sendQueue.pop_front();
+                            }
+                            else if(sentBytes > 0)
+                            {
+                                front.erase(front.begin(), front.begin() + sentBytes);
                             }
                         }
                         else if(res == Socket::Result::Closed || res == Socket::Result::Error)
                         {
-                            if(disconnectCallback) disconnectCallback(client.id);
-                            client.socket.close();
+                            if(disconnectCallback) disconnectCallback(client->id);
+                            client->socket->close();
                         }
                     }
                 }
             }
 
-            clients.erase(std::remove_if(clients.begin(), clients.end(), [](const Client& client){ return client.socket.getFd() < 0; }), clients.end());
+            for(auto it = clients.begin(); it != clients.end(); )
+            {
+                if((*it)->socket->getFd() < 0)
+                {
+                    (*it)->socket->close();
+                    it = clients.erase(it);
+                }
+                else
+                {
+                    it++;
+                }
+            }
         }
     }
 }

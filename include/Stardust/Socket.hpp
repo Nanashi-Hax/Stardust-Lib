@@ -3,12 +3,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <algorithm>
 
 class Socket
 {
 private:
     int socketFd = -1;
-    std::mutex mtx;
+    std::mutex mutex;
 
 public:
     enum class Result { Success, WouldBlock, Closed, Error };
@@ -18,32 +19,20 @@ public:
 
     Socket(const Socket&) = delete;
     Socket& operator=(const Socket&) = delete;
+    Socket(Socket&& other) = delete;
+    Socket& operator=(Socket&& other) = delete;
 
-    Socket(Socket&& other) noexcept
-    {
-        socketFd = other.socketFd;
-        other.socketFd = -1;
-    }
-
-    Socket& operator=(Socket&& other) noexcept
-    {
-        if(this != &other)
-        {
-            close();
-            socketFd = other.socketFd;
-            other.socketFd = -1;
-        }
-        return *this;
-    }
-
+    // Server
     Result create(bool nonBlocking = true, bool noDelay = true);
-
     Result bind(uint16_t port);
     Result listen(int backlog = 16);
-    Result accept(Socket& outClient);
+    Result accept(std::unique_ptr<Socket>& outClient);
 
+    // Client
     Result send(const void* data, ssize_t size, ssize_t& outBytes);
     Result recv(void* buffer, ssize_t size, ssize_t& outBytes);
+
+    // Common
     Result close();
 
     int getFd() const;

@@ -63,7 +63,13 @@ Socket::Result Socket::bind(uint16_t port)
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     addr.sin_port = htons(port);
 
-    if(::bind(socketFd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
+    int res;
+    {
+        std::lock_guard<std::mutex> bindLock(mutex);
+        res = ::bind(socketFd, (struct sockaddr*)&addr, sizeof(addr));
+    }
+
+    if(res < 0)
     {
         close();
         return Result::Error;
@@ -74,7 +80,13 @@ Socket::Result Socket::bind(uint16_t port)
 
 Socket::Result Socket::listen(int backlog)
 {
-    if(::listen(socketFd, backlog) < 0)
+    int res;
+    {
+        std::lock_guard<std::mutex> listenLock(mutex);
+        res = ::listen(socketFd, backlog);
+    }
+
+    if(res < 0)
     {
         close();
         return Result::Error;
@@ -83,12 +95,18 @@ Socket::Result Socket::listen(int backlog)
     return Result::Success;
 }
 
-Socket::Result Socket::accept(Socket& outClient)
+Socket::Result Socket::accept(std::unique_ptr<Socket>& outClient)
 {
-    int clientFd = ::accept(socketFd, nullptr, nullptr);
+    int clientFd;
+    {
+        std::lock_guard<std::mutex> acceptLock(mutex);
+        clientFd = ::accept(socketFd, nullptr, nullptr);
+    }
+
     if(clientFd >= 0)
     {
-        outClient.socketFd = clientFd;
+        outClient = std::make_unique<Socket>();
+        outClient->socketFd = clientFd;
         return Result::Success;
     }
     else
@@ -105,8 +123,11 @@ Socket::Result Socket::send(const void* data, ssize_t size, ssize_t& outBytes)
 {
     if(socketFd < 0) return Result::Error;
 
-    std::lock_guard<std::mutex> lock(mtx);
-    ssize_t sent = ::send(socketFd, data, size, 0);
+    ssize_t sent;
+    {
+        std::lock_guard<std::mutex> sendLock(mutex);
+        sent = ::send(socketFd, data, size, 0);
+    }
 
     if(sent > 0)
     {
@@ -133,8 +154,11 @@ Socket::Result Socket::recv(void* buffer, ssize_t size, ssize_t& outBytes)
 {
     if(socketFd < 0) return Result::Error;
 
-    std::lock_guard<std::mutex> lock(mtx);
-    ssize_t recvd = ::recv(socketFd, buffer, size, 0);
+    ssize_t recvd;
+    {
+        std::lock_guard<std::mutex> recvLock(mutex);
+        recvd = ::recv(socketFd, buffer, size, 0);
+    }
 
     if(recvd > 0)
     {
@@ -161,11 +185,11 @@ Socket::Result Socket::close()
 {
     if(socketFd >= 0)
     {
+        std::lock_guard<std::mutex> closeLock(mutex);
         ::close(socketFd);
         socketFd = -1;
-        return Result::Success;
     }
-    return Result::Error;
+    return Result::Success;
 }
 
 int Socket::getFd() const

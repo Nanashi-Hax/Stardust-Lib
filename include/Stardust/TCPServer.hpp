@@ -3,52 +3,52 @@
 #include "Stardust/Socket.hpp"
 #include <vector>
 #include <deque>
+#include <thread>
 
 class TCPServer
 {
 public:
-    using DisconnectCallback = std::function<void(uint64_t clientId)>;
-
     struct Packet
     {
-        uint64_t id;
+        uint64_t clientId;
         std::vector<uint8_t> data;
     };
+
+    using RecvCallback = std::function<void(const Packet& data)>;
+    using DisconnectCallback = std::function<void(uint64_t clientId)>;
 
 private:
     struct Client
     {
         uint64_t id;
-        Socket socket;
+        std::unique_ptr<Socket> socket;
 
-        std::vector<uint8_t> sendBuffer;
+        std::deque<std::vector<uint8_t>> sendQueue;
         std::mutex sendMutex;
     };
 
     uint16_t port;
-    bool running = false;
-    Socket listenSocket;
-    std::vector<Client> clients;
+
+    std::unique_ptr<Socket> listenSocket;
+    std::vector<std::unique_ptr<Client>> clients;
     std::mutex clientsMtx;
     uint64_t clientCounter = 0;
 
-    std::deque<Packet> recvQueue;
-    std::mutex recvQueueMutex;
-
+    RecvCallback recvCallback;
     DisconnectCallback disconnectCallback;
+
+    std::jthread eventLoopThread;
+    void runEventLoop(std::stop_token st, int timeoutMs = 100);
     
 public:
     TCPServer(uint16_t port) : port(port) {}
     ~TCPServer() { stop(); }
 
-    void setDisconnectCallback(DisconnectCallback cb) { disconnectCallback = std::move(cb); }
-
     bool start();
     void stop();
-    bool isRunning() const { return running; }
 
-    void runEventLoop(int timeoutMs = 100);
+    bool send(const Packet& packet);
 
-    bool queueSend(const Packet& packet);
-    bool dequeueRecv(Packet& outPacket);
+    void setRecvCallback(RecvCallback cb) { recvCallback = cb; }
+    void setDisconnectCallback(DisconnectCallback cb) { disconnectCallback = std::move(cb); }
 };
