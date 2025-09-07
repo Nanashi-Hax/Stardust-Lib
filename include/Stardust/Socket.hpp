@@ -14,7 +14,7 @@ private:
 public:
     enum class Result { Success, WouldBlock, Closed, Error };
 
-    Socket() = default;
+    Socket() : socketFd(-1) {}
     ~Socket() { close(); }
 
     Socket(const Socket&) = delete;
