@@ -1,7 +1,11 @@
 #include "Stardust/TCPServer.hpp"
-#include <poll.h>
+
 #include <algorithm>
+#include <chrono>
+#include <poll.h>
 #include <nn/ac.h>
+
+#include <whb/log.h>
 
 bool TCPServer::initializeServerIPAddress()
 {
@@ -23,13 +27,17 @@ bool TCPServer::start()
     if(listenSocket->bind(port) != Socket::Result::Success) return false;
     if(listenSocket->listen() != Socket::Result::Success) return false;
 
-    networkThread = std::jthread([this](std::stop_token st)
+    acceptThread = std::jthread([this](std::stop_token token)
     {
-        runNetworkLoop(st);
+        runAcceptLoop(token);
     });
-    processThread = std::jthread([this](std::stop_token st)
+    transferThread = std::jthread([this](std::stop_token token)
     {
-        runProcessLoop(st);
+        runTransferLoop(token);
+    });
+    processThread = std::jthread([this](std::stop_token token)
+    {
+        runProcessLoop(token);
     });
 
     if(initializeServerIPAddress())
@@ -42,10 +50,12 @@ bool TCPServer::start()
 
 void TCPServer::stop()
 {
-    networkThread.request_stop();
+    acceptThread.request_stop();
+    transferThread.request_stop();
     processThread.request_stop();
 
-    if(networkThread.joinable()) networkThread.join();
+    if(acceptThread.joinable()) acceptThread.join();
+    if(transferThread.joinable()) transferThread.join();
     if(processThread.joinable()) processThread.join();
 
     if(listenSocket) listenSocket->close();
@@ -89,164 +99,229 @@ bool TCPServer::send(const Packet& packet)
     return true;
 }
 
-void TCPServer::runNetworkLoop(std::stop_token st, int timeoutMs)
+void TCPServer::runAcceptLoop(std::stop_token token, int timeoutMs)
 {
-    while(!st.stop_requested())
+    if (!listenSocket) return;
+    int listenFd = listenSocket->getFd();
+
+    while (!token.stop_requested())
     {
-        std::vector<pollfd> pfds;
+        pollfd pfd{};
+        pfd.fd = listenFd;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
 
-        // listen sockets
-        pollfd listenPfd;
-        listenPfd.fd = listenSocket->getFd();
-        listenPfd.events = POLLIN;
-        listenPfd.revents = 0;
-        pfds.push_back(listenPfd);
-
-        // client sockets
+        int pret = poll(&pfd, 1, timeoutMs);
+        if (pret < 0)
         {
-            std::lock_guard<std::mutex> clientLock(clientsMtx);
-            for(auto& client : clients)
-            {
-                pollfd pfd;
-                pfd.fd = client->socket->getFd();
-                pfd.events = POLLIN;
-
-                {
-                    std::lock_guard<std::mutex> sendLock(client->sendMutex);
-                    if(!client->sendQueue.empty()) pfd.events |= POLLOUT;
-                }
-
-                pfd.revents = 0;
-                pfds.push_back(pfd);
-            }
+            if (errno == EINTR) continue;
+            WHBLogPrintf("[accept] poll error errno=%d", errno);
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
+        if (pret == 0) {
+            continue;
         }
 
-        int ret = poll(pfds.data(), pfds.size(), timeoutMs);
-        if(ret < 0)
+        if (pfd.revents & POLLIN)
         {
-            if(errno == EINTR)
+            uint32_t outIPAddress = 0;
+            std::unique_ptr<Socket> newSock;
+            auto ares = listenSocket->accept(newSock, outIPAddress);
+
+            WHBLogPrintf("[accept] result=%d newFd=%d ip=0x%08x", (int)ares, newSock ? newSock->getFd() : -1, outIPAddress);
+
+            if (ares == Socket::Result::Success)
             {
+                if (!newSock || newSock->getFd() < 0)
+                {
+                    WHBLogPrintf("[accept] accepted invalid socket, ignoring");
+                }
+                else
+                {
+                    auto client = std::make_unique<Client>();
+                    client->id = clientCounter++; // 可能なら atomic にする
+                    client->socket = std::move(newSock);
+                    {
+                        std::lock_guard<std::mutex> lk(clientsMtx);
+                        clients.push_back(std::move(client));
+                        WHBLogPrintf("[accept] pushed clients.size=%d", (int)clients.size());
+                    }
+                    if (clientIPAddressCallback) clientIPAddressCallback(outIPAddress, clientCounter - 1);
+                }
+            }
+            else if (ares == Socket::Result::WouldBlock)
+            {
+                // poll が偽陽性のときなど。短いスリープで busy-wait を防ぐ
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 continue;
             }
             else
             {
-                break;
-            }
-        }
-        if(ret == 0) continue;
-        
-        // accept new clients
-        if(pfds[0].revents & POLLIN)
-        {
-            uint32_t outIPAddress = 0;
-            std::unique_ptr<Socket> newClient;
-            auto res = listenSocket->accept(newClient, outIPAddress);
-            if(res == Socket::Result::Success)
-            {
-                std::unique_ptr<Client> client = std::make_unique<Client>();
-                client->id = clientCounter++;
-                client->socket = std::move(newClient);
-                std::lock_guard<std::mutex> clientLock(clientsMtx);
-                clients.push_back(std::move(client));
-                if(clientIPAddressCallback) clientIPAddressCallback(outIPAddress, client->id);
-            }
-        }
-
-        // handle clients
-        {
-            std::lock_guard<std::mutex> clientLock(clientsMtx);
-
-            for(size_t i = 0; i < clients.size(); i++)
-            {
-                auto& client = clients[i];
-                pollfd& pfd = pfds[i + 1];
-
-                // recv
-                if(pfd.revents & POLLIN)
-                {
-                    uint8_t buffer[0x1000];
-                    int bytes = 0;
-                    auto res = client->socket->recv(buffer, sizeof(buffer), bytes);
-
-                    if(res == Socket::Result::Success && bytes > 0)
-                    {
-                        Packet packet;
-                        packet.clientId = client->id;
-                        packet.data.assign(buffer, buffer + bytes);
-                        
-                        {
-                            std::lock_guard<std::mutex> queueLock(queueMtx);
-                            packetQueue.push(packet);
-                            queueCv.notify_one();
-                        }
-                    }
-                    else if(res == Socket::Result::Closed || res == Socket::Result::Error)
-                    {
-                        if(disconnectCallback) disconnectCallback(client->id);
-                        client->socket->close();
-                    }
-                }
-
-                // send
-                if(pfd.revents & POLLOUT)
-                {
-                    std::lock_guard<std::mutex> sendlock(client->sendMutex);
-
-                    if(!client->sendQueue.empty())
-                    {
-                        ssize_t sentBytes = 0;
-                        auto& front = client->sendQueue.front();
-                        auto res = client->socket->send(front.data(), front.size(), sentBytes);
-
-                        if(res == Socket::Result::Success || res == Socket::Result::WouldBlock)
-                        {
-                            if(static_cast<size_t>(sentBytes) == front.size())
-                            {
-                                client->sendQueue.pop_front();
-                            }
-                            else if(sentBytes > 0)
-                            {
-                                front.erase(front.begin(), front.begin() + sentBytes);
-                            }
-                        }
-                        else if(res == Socket::Result::Closed || res == Socket::Result::Error)
-                        {
-                            if(disconnectCallback) disconnectCallback(client->id);
-                            client->socket->close();
-                        }
-                    }
-                }
-            }
-
-            for(auto it = clients.begin(); it != clients.end(); )
-            {
-                if((*it)->socket->getFd() < 0)
-                {
-                    (*it)->socket->close();
-                    it = clients.erase(it);
-                }
-                else
-                {
-                    it++;
-                }
+                WHBLogPrintf("[accept] error ares=%d errno=%d", (int)ares, errno);
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                continue;
             }
         }
     }
+
+    WHBLogPrintf("[accept] loop exit");
 }
 
-void TCPServer::runProcessLoop(std::stop_token st)
+void TCPServer::runTransferLoop(std::stop_token token, int timeoutMs)
 {
-    while(!st.stop_requested())
+    struct Snap { Client* client; int fd; bool wantWrite; };
+
+    while (!token.stop_requested())
+    {
+        std::vector<Snap> snaps;
+
+        // 1) clients のスナップショットを作る（ロック下）
+        {
+            std::lock_guard<std::mutex> lk(clientsMtx);
+            snaps.reserve(clients.size());
+            for (auto& up : clients)
+            {
+                if (!up || !up->socket) continue;
+                int fd = up->socket->getFd();
+                if (fd < 0) continue;
+                bool wantWrite = false;
+                {
+                    std::lock_guard<std::mutex> sendlk(up->sendMutex);
+                    if (!up->sendQueue.empty()) wantWrite = true;
+                }
+                snaps.push_back({ up.get(), fd, wantWrite });
+                WHBLogPrintf("[snapshot] id=%llu fd=%d wantWrite=%d",
+                             (unsigned long long)up->id, fd, (int)wantWrite);
+            }
+        }
+
+        if (snaps.empty())
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+
+        // 2) pollfd 配列を作る（listen なし、clients のみ）
+        std::vector<pollfd> pfds;
+        pfds.reserve(snaps.size());
+        for (auto &s : snaps)
+        {
+            pollfd pfd{};
+            pfd.fd = s.fd;
+            pfd.events = POLLIN | (s.wantWrite ? POLLOUT : 0);
+            pfd.revents = 0;
+            pfds.push_back(pfd);
+        }
+
+        int pret = poll(pfds.data(), pfds.size(), timeoutMs);
+        if (pret < 0)
+        {
+            if (errno == EINTR) continue;
+            if (errno == ENOTCONN || errno == EBADF) {
+                WHBLogPrintf("[transfer] poll warning errno=%d", errno);
+                continue;
+            }
+            WHBLogPrintf("[transfer] poll fatal errno=%d", errno);
+            break;
+        }
+        if (pret == 0) continue;
+
+        // 3) スナップショットに対応して安全に処理（pfds[i] <-> snaps[i]）
+        for (size_t i = 0; i < pfds.size(); ++i)
+        {
+            auto &pfd = pfds[i];
+            auto &snap = snaps[i];
+            Client* client = snap.client;
+            if (!client) continue; // safety
+
+            WHBLogPrintf("[transfer] handling id=%llu fd=%d revents=0x%x",
+                         (unsigned long long)client->id, pfd.fd, pfd.revents);
+
+            // recv
+            if (pfd.revents & POLLIN)
+            {
+                std::vector<uint8_t> buf(0x1000);
+                ssize_t recvd = 0;
+                auto rres = client->socket->recv(buf.data(), buf.size(), recvd);
+                WHBLogPrintf("[transfer] recv id=%llu rres=%d recvd=%d", (unsigned long long)client->id, (int)rres, (int)recvd);
+
+                if (rres == Socket::Result::Success && recvd > 0)
+                {
+                    Packet pkt;
+                    pkt.clientId = client->id;
+                    pkt.data.insert(pkt.data.end(), buf.begin(), buf.begin() + recvd);
+                    {
+                        std::lock_guard<std::mutex> qlk(queueMtx);
+                        packetQueue.push(pkt);
+                        queueCv.notify_one();
+                    }
+                }
+                else if (rres == Socket::Result::Closed || rres == Socket::Result::Error)
+                {
+                    WHBLogPrintf("[transfer] recv closed id=%llu", (unsigned long long)client->id);
+                    if (disconnectCallback) disconnectCallback(client->id);
+                    client->socket->close();
+                }
+            }
+
+            // send
+            if (pfd.revents & POLLOUT)
+            {
+                std::lock_guard<std::mutex> sendlk(client->sendMutex);
+                if (!client->sendQueue.empty())
+                {
+                    ssize_t sent = 0;
+                    auto &front = client->sendQueue.front();
+                    auto sres = client->socket->send(front.data(), front.size(), sent);
+                    WHBLogPrintf("[transfer] send id=%llu sres=%d sent=%d front=%d",
+                                 (unsigned long long)client->id, (int)sres, (int)sent, (int)front.size());
+
+                    if (sres == Socket::Result::Success || sres == Socket::Result::WouldBlock)
+                    {
+                        if ((size_t)sent == front.size()) client->sendQueue.pop_front();
+                        else if (sent > 0) front.erase(front.begin(), front.begin() + sent);
+                    }
+                    else
+                    {
+                        WHBLogPrintf("[transfer] send closed id=%llu", (unsigned long long)client->id);
+                        if (disconnectCallback) disconnectCallback(client->id);
+                        client->socket->close();
+                    }
+                }
+            }
+        } // for pfds/snaps
+
+        // 4) cleanup invalid clients（clients ベクタはロックして扱う）
+        {
+            std::lock_guard<std::mutex> lk(clientsMtx);
+            for (auto it = clients.begin(); it != clients.end(); )
+            {
+                if (!(*it) || !(*it)->socket || (*it)->socket->getFd() < 0)
+                {
+                    WHBLogPrintf("[transfer] cleanup erase id=%llu", (*it) ? (unsigned long long)(*it)->id : (unsigned long long)-1);
+                    if (*it && (*it)->socket) (*it)->socket->close();
+                    it = clients.erase(it);
+                }
+                else ++it;
+            }
+        }
+    } // while
+}
+
+void TCPServer::runProcessLoop(std::stop_token token)
+{
+    while(!token.stop_requested())
     {
         Packet packet;
         {
             std::unique_lock<std::mutex> lock(queueMtx);
-            queueCv.wait(lock, [this, &st]
+            queueCv.wait(lock, [this, &token]
             {
-                return !packetQueue.empty() || st.stop_requested();
+                return !packetQueue.empty() || token.stop_requested();
             });
 
-            if(st.stop_requested()) break;
+            if(token.stop_requested()) break;
             if(packetQueue.empty()) continue;
 
             packet = packetQueue.front();

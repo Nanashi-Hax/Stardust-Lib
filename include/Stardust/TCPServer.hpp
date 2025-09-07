@@ -45,11 +45,14 @@ private:
     std::queue<Packet> packetQueue;
     std::mutex queueMtx;
     std::condition_variable queueCv;
-    std::jthread processThread;
-    std::jthread networkThread;
 
-    void runNetworkLoop(std::stop_token st, int timeoutMs = 100);
-    void runProcessLoop(std::stop_token st);
+    std::jthread acceptThread;
+    std::jthread transferThread;
+    std::jthread processThread;
+
+    void runAcceptLoop(std::stop_token token, int timeoutMs = 100);
+    void runTransferLoop(std::stop_token token, int timeoutMs = 100);
+    void runProcessLoop(std::stop_token token);
 
     bool initializeServerIPAddress();
     void finalizeServerIPAddress();
