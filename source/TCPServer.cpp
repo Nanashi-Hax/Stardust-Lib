@@ -56,10 +56,6 @@ namespace StardustLib
         transferThread.request_stop();
         processThread.request_stop();
     
-        if(acceptThread.joinable()) acceptThread.join();
-        if(transferThread.joinable()) transferThread.join();
-        if(processThread.joinable()) processThread.join();
-    
         if(listenSocket) listenSocket->close();
     
         std::lock_guard<std::mutex> lock(clientsMtx);
