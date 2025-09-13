@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Stardust/Socket.hpp"
+#include "StardustLib/Socket.hpp"
 #include <vector>
 #include <queue>
 #include <thread>
