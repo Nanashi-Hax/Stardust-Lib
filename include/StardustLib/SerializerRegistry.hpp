@@ -4,14 +4,14 @@
 #include <unordered_map>
 #include <mutex>
 #include <any>
-#include "StardustLib/Buffer.hpp"
+#include "StardustLib/DataBuffer.hpp"
 #include "StardustLib/Message.hpp"
 
 namespace StardustLib
 {
     template<typename T>
-    using Serializer = std::function<void(T in, BufferWriter& out)>;
-    using GenericSerializer = std::function<void(std::any in, BufferWriter& out)>;
+    using Serializer = std::function<void(T in, DataBuffer& out)>;
+    using GenericSerializer = std::function<void(std::any in, DataBuffer& out)>;
     using GenericSerializerMap = std::unordered_map<MessageId, GenericSerializer, MessageIdHash, MessageIdEqual>;
 
     class SerializerRegistry

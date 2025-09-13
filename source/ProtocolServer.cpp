@@ -8,7 +8,6 @@ namespace StardustLib
     ProtocolServer::ProtocolServer(uint16_t port)
     {
         mTCPServer = std::make_unique<TCPServer>(port);
-        // tie callbacks
         mTCPServer->setRecvCallback([this](const TCPServer::Packet& p)
         {
             this->onTcpPacket(p);
@@ -34,71 +33,35 @@ namespace StardustLib
         mTCPServer->stop();
         {
             std::lock_guard<std::mutex> lk(mClientBuffersMtx);
-            mClientBuffers.clear();
+            mClientBufferMap.clear();
         }
     }
 
-    void ProtocolServer::onTcpPacket(const TCPServer::Packet& pkt)
+    void ProtocolServer::onTcpPacket(const TCPServer::Packet& packet)
     {
-        std::lock_guard<std::mutex> lk(mClientBuffersMtx);
-        auto &buf = mClientBuffers[pkt.clientId];
-        buf.insert(buf.end(), pkt.data.begin(), pkt.data.end());
-        parseClientBuffer(pkt.clientId, buf);
+        std::lock_guard<std::mutex> lock(mClientBuffersMtx);
+        DataBuffer& buffer = mClientBufferMap[packet.clientId];
+        buffer.insert(buffer.end(), packet.data.begin(), packet.data.end());
+        dataDispatcher(packet.clientId, buffer);
     }
 
-    void ProtocolServer::onTcpDisconnect(uint64_t clientId)
-    {
-        {
-            std::lock_guard<std::mutex> lk(mClientBuffersMtx);
-            mClientBuffers.erase(clientId);
-        }
-        if (mDisconnectCb) mDisconnectCb(clientId);
-    }
-
-    void ProtocolServer::parseClientBuffer(uint64_t clientId, std::vector<uint8_t>& buf)
+    void ProtocolServer::dataDispatcher(uint64_t clientId, DataBuffer& data)
     {
         size_t offset = 0;
         while (true)
         {
-            if (buf.size() - offset < 4) break; // need length
+            uint32_t length = 0;
+            if (data.size() - offset < sizeof(length)) break;
 
-            uint32_t len = 0;
-            std::memcpy(&len, buf.data() + offset, 4);
-            uint32_t total_len = len;
+            data.read<uint32_t>(length);
+            if (length == 0 || length > MAX_MESSAGE_SIZE) return;
 
-            if (total_len == 0 || total_len > MAX_MESSAGE_SIZE)
+            if (data.size() - offset < sizeof(length) + length) break;
+
+            GenericProcessor processor;
+            bool hasProcessor = false;
             {
-                // protocol error: drop connection
-                std::cerr << "Protocol error: invalid frame length " << total_len << ". Disconnecting client " << clientId << ".\n";
-                buf.clear();
-                if (mDisconnectCb) mDisconnectCb(clientId);
-                return;
-            }
-            if (buf.size() - offset < 4 + total_len) break; // wait for full frame
-
-            // frame available
-            const uint8_t* framePtr = buf.data() + offset + 4;
-            size_t frameSize = total_len;
-
-            if (frameSize < 4)
-            { // must have at least opCode and version
-                std::cerr << "Protocol error: frame size " << frameSize << " is too small. Disconnecting client " << clientId << ".\n";
-                buf.clear();
-                if (mDisconnectCb) mDisconnectCb(clientId);
-                return;
-            }
-            uint16_t be_type = 0;
-            uint16_t be_ver = 0;
-            std::memcpy(&be_type, framePtr + 0, 2);
-            std::memcpy(&be_ver, framePtr + 2, 2);
-            uint16_t opCode = from_be(be_type);
-            uint16_t version = from_be(be_ver);
-
-            uint32_t key = (static_cast<uint32_t>(opCode) << 16) | version;
-            GenericRecvHandler typedHandler;
-            bool hasTypedHandler = false;
-            {
-                std::lock_guard<std::mutex> lk(mHandlersMtx);
+                std::lock_guard<std::mutex> lk(mProcessorMtx);
                 auto it = mHandlers.find(key);
                 if (it != mHandlers.end())
                 {
@@ -113,22 +76,18 @@ namespace StardustLib
                 GenericDeserializer deserializer;
                 if (!mDeserializers.getDeserializer(opCode, version, deserializer))
                 {
-                    std::cerr << "ProtocolServer Error: Typed handler registered for " << opCode << "v" << version << " but no deserializer was found. Disconnecting client " << clientId << ".\n";
                     buf.clear();
-                    if (mDisconnectCb) mDisconnectCb(clientId);
                     return;
                 }
 
                 auto payload = std::make_shared<std::vector<uint8_t>>(framePtr + 4, framePtr + frameSize);
                 BufferReader reader(payload);
 
-                Result<std::any> deser_result = deserializer(reader);
+                deserializer(reader);
 
                 if (!deser_result.ok)
                 {
-                    std::cerr << "Deserializer error (code=" << static_cast<int>(deser_result.err) << "), disconnecting client " << clientId << "\n";
                     buf.clear();
-                    if (mDisconnectCb) mDisconnectCb(clientId);
                     return;
                 }
 

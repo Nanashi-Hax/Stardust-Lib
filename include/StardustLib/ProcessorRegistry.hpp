@@ -4,7 +4,6 @@
 #include <unordered_map>
 #include <mutex>
 #include <any>
-#include "StardustLib/Buffer.hpp"
 #include "StardustLib/Message.hpp"
 
 namespace StardustLib

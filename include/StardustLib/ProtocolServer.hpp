@@ -9,7 +9,7 @@
 #include "StardustLib/SerializerRegistry.hpp"
 #include "StardustLib/DeserializerRegistry.hpp"
 #include "StardustLib/ProcessorRegistry.hpp"
-#include "StardustLib/Buffer.hpp"
+#include "StardustLib/DataBuffer.hpp"
 #include "StardustLib/TCPServer.hpp"
 
 namespace StardustLib
@@ -17,20 +17,18 @@ namespace StardustLib
     class ProtocolServer
     {
     private:
-        // internal helpers
-        void onTcpPacket(const TCPServer::Packet& pkt);
+        void onTcpPacket(const TCPServer::Packet& packet);
         void onTcpDisconnect(uint64_t clientId);
-        void parseClientBuffer(uint64_t clientId, std::vector<uint8_t>& buffer);
+        void dataDispatcher(uint64_t clientId, DataBuffer& payload);
 
         std::unique_ptr<TCPServer> mTCPServer;
 
-        // Registries and Callbacks
         SerializerRegistry mSerializers;
         DeserializerRegistry mDeserializers;
         ProcessorRegistry mProcessors;
 
         std::mutex mClientBuffersMtx;
-        std::unordered_map<uint64_t, std::vector<uint8_t>> mClientBuffers;
+        std::unordered_map<uint64_t, DataBuffer> mClientBufferMap;
 
     public:
         static constexpr uint32_t MAX_MESSAGE_SIZE = 1024 * 1024; // 1MB
@@ -59,43 +57,35 @@ namespace StardustLib
             mDeserializers.registerDeserializer<T>(id, std::move(deserializer));
         }
 
-        bool sendMessageRaw(uint64_t clientId, MessageId id, const BufferWriter& payload)
+        bool sendRaw(uint64_t clientId, MessageId id, const DataBuffer& payload)
         {
-            // Frame: [u32 total_len_be] [u16 opCode_be] [u16 version_be] [payload]
-            // total_len = 2 (type) + 2 (ver) + N (payload)
-            uint32_t payloadSize = static_cast<uint32_t>(payload.buf.size());
-            uint32_t totalLen = 2 + 2 + payloadSize;
-            if (totalLen > MAX_MESSAGE_SIZE) return false;
+            const uint32_t idSize = sizeof(MessageId::value);
+            uint32_t payloadSize = payload.buffer().size();
 
-            BufferWriter w;
-            w.reserve(4 + totalLen);
-            w.write<uint32_t>(totalLen);
-            w.write<uint16_t>(opCode);
-            w.write<uint16_t>(version);
-            if (payloadSize) w.writeBytes(payload.buf.data(), payloadSize);
+            uint32_t totalSize = idSize + payloadSize;
+            if (totalSize > MAX_MESSAGE_SIZE) return false;
 
-            TCPServer::Packet pkt;
-            pkt.clientId = clientId;
-            pkt.data = std::move(w.buf);
-            return mTCPServer->send(pkt);
+            DataBuffer writer;
+            writer.write<uint32_t>(idSize);
+            writer.write<uint16_t>(id.value);
+            writer.write<uint32_t>(payloadSize);
+            writer.writeBlob(payload.buffer());
+
+            TCPServer::Packet packet;
+            packet.clientId = clientId;
+            packet.data = std::move(payload.buffer());
+            return mTCPServer->send(packet);
         }
 
         template<typename T>
         bool send(uint64_t clientId, MessageId id, const T& object)
         {
-            std::function<void(const void* obj, BufferWriter& out)> ser;
-            if (!mSerializers.getSerializer(opCode, version, ser)) return false;
-            BufferWriter payload;
-            ser(&object, payload);
-            return sendMessageRaw(clientId, opCode, version, payload);
-        }
+            Serializer serializer = mSerializers.getSerializer(id)
+            if (!serializer) return false;
 
-        template<typename T>
-        bool send(uint64_t clientId, const T& obj)
-        {
-            uint16_t opCode = 0, version = 0;
-            if (!mSerializers.getKeyForType<T>(opCode, version)) return false;
-            return send<T>(clientId, opCode, version, obj);
+            BufferWriter payload;
+            serializer(&object, payload);
+            return sendMessageRaw(clientId, id, payload);
         }
     };
-} // namespace StardustLib
+}

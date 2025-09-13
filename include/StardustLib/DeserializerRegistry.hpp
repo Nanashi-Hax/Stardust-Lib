@@ -4,14 +4,13 @@
 #include <unordered_map>
 #include <mutex>
 #include <any>
-#include "StardustLib/Buffer.hpp"
-#include "StardustLib/Message.hpp"
+#include "StardustLib/DataBuffer.hpp"
 
 namespace StardustLib
 {
     template<typename T>
-    using Deserializer = std::function<void(BufferReader& in, T& out)>;
-    using GenericDeserializer = std::function<void(BufferReader& in, std::any& out)>;
+    using Deserializer = std::function<void(DataBuffer& in, T& out)>;
+    using GenericDeserializer = std::function<void(DataBuffer& in, std::any& out)>;
     using GenericDeserializerMap = std::unordered_map<MessageId, GenericDeserializer, MessageIdHash, MessageIdEqual>;
 
     class DeserializerRegistry
