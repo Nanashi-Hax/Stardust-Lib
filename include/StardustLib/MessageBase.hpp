@@ -26,7 +26,7 @@ namespace StardustLib
 
         void send()
         {
-            if(!mClientId || !mServer) return;
+            if(!mServer) return;
 
             BufferWriter writer;
             serialize(writer);
