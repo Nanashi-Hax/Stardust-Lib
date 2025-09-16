@@ -29,8 +29,11 @@ namespace StardustLib
         {
             uint32_t id = reader.read<uint32_t>();
             std::unique_ptr<MessageBase> message = mFactory.create(id, clientId, mTCPServer);
-            message->deserialize(reader);
-            message->process();
+            if (message)
+            {
+                message->deserialize(reader);
+                message->process();
+            }
         }
 
         std::shared_ptr<TCPServer> mTCPServer;

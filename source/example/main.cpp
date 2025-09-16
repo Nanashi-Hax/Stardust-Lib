@@ -10,6 +10,8 @@ private:
     uint32_t value;
 
 public:
+    Ping(uint64_t clientId, std::shared_ptr<StardustLib::TCPServer> server) : MessageBase(clientId, server) {}
+
     void serialize(StardustLib::BufferWriter& writer) const override
     {
         writer.write(value);
@@ -33,6 +35,8 @@ private:
     uint32_t value;
 
 public:
+    Pong(uint64_t clientId, std::shared_ptr<StardustLib::TCPServer> server) : MessageBase(clientId, server) {}
+
     void serialize(StardustLib::BufferWriter& writer) const override
     {
         writer.write(value);
@@ -50,6 +54,7 @@ int main()
     StardustLib::MessageServer server(port);
 
     server.registerType<Ping>(1);
+    server.registerType<Pong>(2);
 
     server.start();
 

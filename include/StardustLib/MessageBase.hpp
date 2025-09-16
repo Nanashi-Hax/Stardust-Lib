@@ -35,7 +35,7 @@ namespace StardustLib
             packet.clientId = mClientId;
             packet.data = writer.data();
 
-            mServer->send(packet);
+            mServer->send(std::move(packet));
         }
     };
 

@@ -4,6 +4,7 @@
 #include <vector>
 #include <queue>
 #include <thread>
+#include <atomic>
 
 namespace StardustLib
 {
@@ -37,7 +38,7 @@ namespace StardustLib
         std::unique_ptr<Socket> listenSocket;
         std::vector<std::unique_ptr<Client>> clients;
         std::mutex clientsMtx;
-        uint64_t clientCounter = 0;
+        std::atomic<uint64_t> clientCounter = 0;
     
         RecvCallback recvCallback;
         DisconnectCallback disconnectCallback;
@@ -71,7 +72,7 @@ namespace StardustLib
         bool start();
         void stop();
     
-        bool send(const Packet& packet);
+        bool send(Packet packet);
     
         void setRecvCallback(RecvCallback cb) { recvCallback = cb; }
         void setDisconnectCallback(DisconnectCallback cb) { disconnectCallback = std::move(cb); }

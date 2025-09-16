@@ -71,7 +71,7 @@ namespace StardustLib
         finalizeServerIPAddress();
     }
     
-    bool TCPServer::send(const Packet& packet)
+    bool TCPServer::send(Packet packet)
     {
         Client* client = nullptr;
     
@@ -92,7 +92,7 @@ namespace StardustLib
         {
             std::lock_guard<std::mutex> sendLock(client->sendMutex);
         
-            client->sendQueue.push_back(packet.data);
+            client->sendQueue.push_back(std::move(packet.data));
         }
         return true;
     }
@@ -138,7 +138,7 @@ namespace StardustLib
                     else
                     {
                         auto client = std::make_unique<Client>();
-                        client->id = clientCounter++; // 可能なら atomic にする
+                        client->id = clientCounter++;
                         client->socket = std::move(newSock);
                         {
                             std::lock_guard<std::mutex> lk(clientsMtx);
