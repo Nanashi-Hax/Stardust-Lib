@@ -39,7 +39,7 @@ CFLAGS	:=	-Wall -Werror -save-temps \
 
 CFLAGS	+=	$(INCLUDE) -D__WIIU__ -D__WUT__ -fno-exceptions
 
-CXXFLAGS	:= $(CFLAGS) -std=gnu++20
+CXXFLAGS	:= $(CFLAGS) -std=c++23
 
 ASFLAGS	:=	$(MACHDEP)
 

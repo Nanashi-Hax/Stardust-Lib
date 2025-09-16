@@ -13,10 +13,10 @@ namespace StardustLib
         template<Message T>
         void registerType(uint32_t id)
         {
-            creators[id] = [](uint64_t clientId, std::shared_ptr<TCPServer> server){ return std::make_unique<T>(clientId, server); };
+            creators[id] = [](uint32_t clientId, std::shared_ptr<TCPServer> server){ return std::make_unique<T>(clientId, server); };
         }
 
-        std::unique_ptr<MessageBase> create(uint32_t id, uint64_t clientId, std::shared_ptr<TCPServer> server) const
+        std::unique_ptr<MessageBase> create(uint32_t id, uint32_t clientId, std::shared_ptr<TCPServer> server) const
         {
             auto it = creators.find(id);
             if (it != creators.end())
@@ -27,7 +27,7 @@ namespace StardustLib
         }
 
     private:
-        using Creator = std::function<std::unique_ptr<MessageBase>(uint64_t clientId, std::shared_ptr<TCPServer> server)>;
+        using Creator = std::function<std::unique_ptr<MessageBase>(uint32_t clientId, std::shared_ptr<TCPServer> server)>;
         std::unordered_map<uint32_t, Creator> creators;
     };
 }

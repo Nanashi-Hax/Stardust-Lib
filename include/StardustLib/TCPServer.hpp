@@ -13,19 +13,19 @@ namespace StardustLib
     public:
         struct Packet
         {
-            uint64_t clientId;
+            uint32_t clientId;
             std::vector<uint8_t> data;
         };
     
         using RecvCallback = std::function<void(const Packet& data)>;
-        using DisconnectCallback = std::function<void(uint64_t clientId)>;
+        using DisconnectCallback = std::function<void(uint32_t clientId)>;
         using ServerIPAddressCallback = std::function<void(uint32_t ipAddress)>;
-        using ClientIPAddressCallback = std::function<void(uint32_t ipAddress, uint64_t id)>;
+        using ClientIPAddressCallback = std::function<void(uint32_t ipAddress, uint32_t id)>;
     
     private:
         struct Client
         {
-            uint64_t id;
+            uint32_t id;
             std::unique_ptr<Socket> socket;
         
             std::deque<std::vector<uint8_t>> sendQueue;
@@ -38,7 +38,7 @@ namespace StardustLib
         std::unique_ptr<Socket> listenSocket;
         std::vector<std::unique_ptr<Client>> clients;
         std::mutex clientsMtx;
-        std::atomic<uint64_t> clientCounter = 0;
+        std::atomic<uint32_t> clientCounter = 0;
     
         RecvCallback recvCallback;
         DisconnectCallback disconnectCallback;

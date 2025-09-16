@@ -10,15 +10,15 @@ namespace StardustLib
     class MessageBase : public ISerializable
     {
     private:
-        uint64_t mClientId;
+        uint32_t mClientId;
         std::shared_ptr<TCPServer> mServer;
 
     protected:
-        uint64_t getClientId() { return mClientId; }
+        uint32_t getClientId() { return mClientId; }
         std::shared_ptr<TCPServer> getServer() { return mServer; }
 
     public:
-        MessageBase(uint64_t clientId, std::shared_ptr<TCPServer> server) : mClientId(clientId), mServer(server) {}
+        MessageBase(uint32_t clientId, std::shared_ptr<TCPServer> server) : mClientId(clientId), mServer(server) {}
 
         virtual ~MessageBase() = default;
 

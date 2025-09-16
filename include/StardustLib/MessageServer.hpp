@@ -25,7 +25,7 @@ namespace StardustLib
             dispatch(packet.clientId, buffer);
         }
 
-        void dispatch(uint64_t clientId, BufferReader& reader)
+        void dispatch(uint32_t clientId, BufferReader& reader)
         {
             uint32_t id = reader.read<uint32_t>();
             std::unique_ptr<MessageBase> message = mFactory.create(id, clientId, mTCPServer);
@@ -39,7 +39,7 @@ namespace StardustLib
         std::shared_ptr<TCPServer> mTCPServer;
 
     public:
-        explicit MessageServer::MessageServer(uint16_t port)
+        explicit MessageServer(uint16_t port)
         {
             mTCPServer = std::make_shared<TCPServer>(port);
             mTCPServer->setRecvCallback([this](const TCPServer::Packet& p)
